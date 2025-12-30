@@ -938,9 +938,86 @@ const html = `<!DOCTYPE html>
       pointer-events: none;
       z-index: -1;
     }
+
+    /* Loading Overlay */
+    .loading-overlay {
+      position: fixed;
+      inset: 0;
+      background: var(--void);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 2000;
+      transition: opacity 0.4s ease, visibility 0.4s ease;
+    }
+
+    .loading-overlay.hidden {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .loading-spinner {
+      width: 60px;
+      height: 60px;
+      position: relative;
+    }
+
+    .loading-spinner::before,
+    .loading-spinner::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      border: 2px solid transparent;
+      border-radius: 50%;
+    }
+
+    .loading-spinner::before {
+      border-top-color: var(--cyan);
+      border-right-color: var(--cyan);
+      animation: spin 1s linear infinite;
+    }
+
+    .loading-spinner::after {
+      inset: 8px;
+      border-bottom-color: var(--cyan-dim);
+      border-left-color: var(--cyan-dim);
+      animation: spin 0.6s linear infinite reverse;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .loading-text {
+      margin-top: 1.5rem;
+      font-family: 'Chakra Petch', sans-serif;
+      font-size: 0.875rem;
+      color: var(--cyan);
+      text-transform: uppercase;
+      letter-spacing: 0.15em;
+      animation: loadingPulse 1.5s ease-in-out infinite;
+    }
+
+    @keyframes loadingPulse {
+      0%, 100% { opacity: 0.5; }
+      50% { opacity: 1; }
+    }
+
+    .loading-progress {
+      margin-top: 0.75rem;
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      letter-spacing: 0.05em;
+    }
   </style>
 </head>
 <body>
+  <div class="loading-overlay" id="loading">
+    <div class="loading-spinner"></div>
+    <div class="loading-text">Scanning System</div>
+    <div class="loading-progress" id="loading-progress">Initializing...</div>
+  </div>
   <div class="container">
     <header class="header">
       <div class="header-left">
@@ -1035,6 +1112,8 @@ const html = `<!DOCTYPE html>
   </div>
 
   <script>
+    let isFirstLoad = true;
+
     function getMemClass(mb) {
       if (mb >= 500) return 'high';
       if (mb >= 200) return 'medium';
@@ -1046,9 +1125,21 @@ const html = `<!DOCTYPE html>
       return mb + ' MB';
     }
 
+    function updateLoadingProgress(msg) {
+      const el = document.getElementById('loading-progress');
+      if (el) el.textContent = msg;
+    }
+
+    function hideLoading() {
+      const overlay = document.getElementById('loading');
+      if (overlay) overlay.classList.add('hidden');
+    }
+
     async function fetchData() {
       try {
+        if (isFirstLoad) updateLoadingProgress('Fetching process data...');
         const res = await fetch('/api/memory');
+        if (isFirstLoad) updateLoadingProgress('Parsing memory stats...');
         const data = await res.json();
 
         const pct = (data.used / data.total * 100).toFixed(0);
@@ -1151,8 +1242,17 @@ const html = `<!DOCTYPE html>
         document.getElementById('tips').innerHTML = tips.map(t => '<div class="tip-item"><span class="tip-bullet"></span>' + t + '</div>').join('');
 
         document.getElementById('timestamp').textContent = new Date(data.timestamp).toLocaleTimeString();
+
+        if (isFirstLoad) {
+          updateLoadingProgress('Complete');
+          setTimeout(hideLoading, 200);
+          isFirstLoad = false;
+        }
       } catch (e) {
         console.error('Fetch failed:', e);
+        if (isFirstLoad) {
+          updateLoadingProgress('Connection error, retrying...');
+        }
       }
     }
 
