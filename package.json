@@ -1,0 +1,8 @@
+{
+  "name": "ram-dashboard",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "bun run server.ts"
+  },
+  "dependencies": {}
+}
