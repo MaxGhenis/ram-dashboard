@@ -11,3 +11,7 @@ CompilationCache.noindex/
 
 # OS files
 .DS_Store
+
+# v2 (root package)
+.build/
+dist/
