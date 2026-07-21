@@ -59,6 +59,46 @@ final class SessionTreeTests: XCTestCase {
         XCTAssertEqual(trees.count, 1)
     }
 
+    func testYoungerReusedPidRootCannotClaimOlderChild() throws {
+        // Non-atomic sampling: child 30 was sampled with ppid 20, whose pid
+        // was then reused by a NEWER engine. A real parent starts before its
+        // child, so the edge must be rejected. (sol cross-family review)
+        let samples = [
+            Fixture.process(1, 0, Fixture.launchd, start: 0),
+            Fixture.process(20, 1, Fixture.cliEngine, cwd: "/Users/dev/projects/new", mb: 300, start: 200),
+            Fixture.process(30, 20, Fixture.node, mb: 500, start: 100),
+        ]
+        let trees = buildSessionTrees(samples)
+        let root = try XCTUnwrap(trees.first { $0.root.pid == 20 })
+        XCTAssertEqual(Set(root.members.map(\.pid)), [20],
+                       "an older process must not be claimed through a reused pid")
+    }
+
+    func testMutualEngineCycleKeepsOlderRootWhenStartsDiffer() throws {
+        // An apparent two-engine parent cycle (only possible from a racy
+        // snapshot) must not drop the whole component: monotonic edges leave
+        // the older engine as root, claiming the younger. (sol review)
+        let samples = [
+            Fixture.process(10, 11, Fixture.cliEngine, cwd: "/Users/dev/a", mb: 100, start: 100),
+            Fixture.process(11, 10, Fixture.codexEngine, cwd: "/Users/dev/b", mb: 100, start: 200),
+        ]
+        let trees = buildSessionTrees(samples)
+        XCTAssertEqual(trees.count, 1)
+        let tree = try XCTUnwrap(trees.first)
+        XCTAssertEqual(tree.root.pid, 10)
+        XCTAssertEqual(Set(tree.members.map(\.pid)), [10, 11])
+    }
+
+    func testMutualEngineCycleWithEqualStartsDropsBoth() {
+        // Documented residual: equal start times cannot be ordered, so an
+        // equal-start mutual cycle disqualifies both engines for one scan.
+        let samples = [
+            Fixture.process(10, 11, Fixture.cliEngine, mb: 100, start: 100),
+            Fixture.process(11, 10, Fixture.codexEngine, mb: 100, start: 100),
+        ]
+        XCTAssertEqual(buildSessionTrees(samples).count, 0)
+    }
+
     func testSortedByFootprintDescending() {
         let footprints = buildSessionTrees(Fixture.machine).map(\.footprint)
         XCTAssertEqual(footprints, footprints.sorted(by: >))

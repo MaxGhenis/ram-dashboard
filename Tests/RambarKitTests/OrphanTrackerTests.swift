@@ -16,16 +16,19 @@ final class OrphanTrackerTests: XCTestCase {
         after.append(Fixture.process(203, 1, Fixture.node, mb: 120))
 
         let first = scan(after, &tracker)
-        XCTAssertEqual(first.count, 0, "one observation is inside the grace period")
+        XCTAssertEqual(first.count, 0, "the detachment scan itself never alerts")
 
         let second = scan(after, &tracker)
-        XCTAssertEqual(second.count, 1)
-        XCTAssertEqual(second.newlyDetected, 1)
-        XCTAssertEqual(second.footprint, 120 * 1_048_576)
+        XCTAssertEqual(second.count, 0, "one further scan is still inside the grace period")
 
         let third = scan(after, &tracker)
-        XCTAssertEqual(third.count, 1)
-        XCTAssertEqual(third.newlyDetected, 0, "standing orphans must not re-alert")
+        XCTAssertEqual(third.count, 1, "promoted after surviving two further scans")
+        XCTAssertEqual(third.newlyDetected, 1)
+        XCTAssertEqual(third.footprint, 120 * 1_048_576)
+
+        let fourth = scan(after, &tracker)
+        XCTAssertEqual(fourth.count, 1)
+        XCTAssertEqual(fourth.newlyDetected, 0, "standing orphans must not re-alert")
     }
 
     func testHelperThatExitsDuringGraceIsNeverReported() {
@@ -51,6 +54,7 @@ final class OrphanTrackerTests: XCTestCase {
         var after = full.filter { $0.pid != 103 }
         after.append(Fixture.process(103, 1, Fixture.node, mb: 200))
 
+        _ = scan(after, &tracker)
         _ = scan(after, &tracker)
         let report = scan(after, &tracker)
         XCTAssertEqual(report.count, 1)
@@ -79,6 +83,7 @@ final class OrphanTrackerTests: XCTestCase {
 
         var detached = full.filter { $0.pid != 103 }
         detached.append(Fixture.process(103, 1, Fixture.node, mb: 200))
+        _ = scan(detached, &tracker)
         _ = scan(detached, &tracker)
         XCTAssertEqual(scan(detached, &tracker).count, 1)
 

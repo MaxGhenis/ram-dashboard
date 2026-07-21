@@ -75,7 +75,10 @@ public struct OrphanTracker: Sendable {
             && stillDetached(identity)
             && !orphans.contains(identity)
             && candidateObservations[identity] == nil {
-            candidateObservations[identity] = 1
+            // Seed at zero: promotion needs two further scans after the
+            // detachment scan (~10 s at the default cadence), so teardown
+            // helpers that linger a few seconds never alert.
+            candidateObservations[identity] = 0
         }
 
         previousChildren = claimedChildren

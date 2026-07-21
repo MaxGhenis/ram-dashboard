@@ -54,12 +54,22 @@ private func isTerminalAncestor(_ basename: String) -> Bool {
     return basename.hasPrefix("code helper") || basename.hasPrefix("cursor helper")
 }
 
+/// A parentage edge is only credible when the parent started no later than
+/// the child — fork order guarantees it for true parents. Collection is not
+/// atomic: a pid sampled as someone's ppid can die and be reused by a newer
+/// process before the table is complete, and without this check the newer
+/// process (possibly an engine root) would claim the older child.
+private func isPlausibleParent(_ parent: ProcessSample, of child: ProcessSample) -> Bool {
+    parent.startTime <= child.startTime
+}
+
 /// Group all processes into agent session trees.
 ///
 /// Roots are engine processes with no engine ancestor; every process is
 /// assigned to its nearest root ancestor (a claude engine spawned inside
 /// another claude session counts into the parent session). Ancestry walks are
-/// cycle-guarded. Sorted by footprint descending.
+/// cycle-guarded and every edge must satisfy start-time monotonicity.
+/// Sorted by footprint descending.
 public func buildSessionTrees(_ samples: [ProcessSample]) -> [AgentSessionTree] {
     var byPid: [Int32: ProcessSample] = [:]
     for sample in samples where sample.pid > 0 {
@@ -67,11 +77,12 @@ public func buildSessionTrees(_ samples: [ProcessSample]) -> [AgentSessionTree] 
     }
 
     func hasEngineAncestor(_ sample: ProcessSample) -> Bool {
-        var current = sample.ppid
+        var child = sample
         var visited: Set<Int32> = [sample.pid]
-        while current > 0, visited.insert(current).inserted, let parent = byPid[current] {
+        while child.ppid > 0, visited.insert(child.ppid).inserted,
+              let parent = byPid[child.ppid], isPlausibleParent(parent, of: child) {
             if agentFamily(forExecutablePath: parent.execPath) != nil { return true }
-            current = parent.ppid
+            child = parent
         }
         return false
     }
@@ -85,26 +96,29 @@ public func buildSessionTrees(_ samples: [ProcessSample]) -> [AgentSessionTree] 
 
     var membersByRoot: [Int32: [ProcessSample]] = [:]
     for sample in samples where sample.pid > 0 {
-        var current = sample.pid
+        var current = sample
         var visited: Set<Int32> = []
-        while current > 0, visited.insert(current).inserted {
-            if rootPids.contains(current) {
-                membersByRoot[current, default: []].append(sample)
+        while visited.insert(current.pid).inserted {
+            if rootPids.contains(current.pid) {
+                membersByRoot[current.pid, default: []].append(sample)
                 break
             }
-            guard let process = byPid[current] else { break }
-            current = process.ppid
+            guard current.ppid > 0,
+                  let parent = byPid[current.ppid],
+                  isPlausibleParent(parent, of: current) else { break }
+            current = parent
         }
     }
 
     func mode(of root: ProcessSample) -> SessionMode {
-        var current = root.ppid
+        var child = root
         var visited: Set<Int32> = [root.pid]
-        while current > 0, visited.insert(current).inserted, let parent = byPid[current] {
+        while child.ppid > 0, visited.insert(child.ppid).inserted,
+              let parent = byPid[child.ppid], isPlausibleParent(parent, of: child) {
             let lower = parent.execPath.lowercased()
             if lower.contains("/applications/claude.app/") { return .desktop }
             if isTerminalAncestor((lower as NSString).lastPathComponent) { return .terminal }
-            current = parent.ppid
+            child = parent
         }
         return .headless
     }
