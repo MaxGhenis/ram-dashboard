@@ -7,7 +7,25 @@ on:
     branches: [master]
 
 jobs:
-  test:
+  v2-test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run tests
+        run: swift test
+
+  v2-build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release and bundle app
+        run: |
+          swift build -c release
+          scripts/bundle-app.sh release
+
+  v1-test:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,7 +33,7 @@ jobs:
       - name: Run tests (SPM)
         run: cd RAMBar && swift test
 
-  build:
+  v1-build:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4

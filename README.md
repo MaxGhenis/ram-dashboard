@@ -1,67 +1,73 @@
-# RAMBar
+# Rambar
 
-A native macOS menu bar app for monitoring RAM usage, built for developers running Claude Code.
+A memory ledger for agent fleets, as a native macOS menu bar app, a CLI, and an MCP server.
 
-![RAMBar Screenshot](screenshot.png)
+Rambar attributes RAM to **agent sessions** — a Claude Code, Codex, or Gemini root process plus every helper descended from it (MCP servers, shells, dev servers) — instead of to app names. It finds sessions however they are hosted: the Claude desktop app, a terminal or tmux pane, or headless workers with no TTY at all.
 
-## Why I Built This
+## Why sessions, not apps
 
-After Claude 4.5 Opus came out, my Claude Code usage skyrocketed. I was running multiple sessions at once—main agents spawning subagents across different projects—and my 16GB MacBook Air couldn't keep up. VS Code kept crashing. Chrome tabs were piling up. I had no visibility into what was actually consuming memory.
+Per-app accounting answers "how much is node using." It cannot answer the questions that matter when you run many agents: which session is the memory hog, what did a closed session leave behind, and why are there 22 resident copies of the same MCP server. The first live run of Rambar on the machine it was built on found ~3 GB of exactly that duplication — the same four MCP servers loaded once per session, 22 times each.
 
-Activity Monitor shows processes, but I needed answers like: *Which Claude session is the memory hog? Can I spawn another subagent? Which Chrome tabs should I close first?*
+## What it shows
 
-So I upgraded to a 48GB MacBook Pro, which mostly solved the crashes. But I still wanted to know when I was pushing limits—and RAMBar gives me that visibility.
+- **Per-session footprint** — `ri_phys_footprint` (what Activity Monitor's Memory column reports) summed over each session's full process tree, with hosting mode (desktop / terminal / headless), project, process count, and expandable helper breakdown
+- **Kernel pressure, not percent** — the menu bar tint and alerts key off macOS memory-pressure events; 81% used with a calm kernel is fine, and Rambar says so
+- **Alerts that name the mover** — a pressure transition reports the session that grew most in the last 10 minutes, not just a level
+- **Hygiene** — helpers that outlived their session (with one-click reclaim), and the same helper binary resident many times across sessions
+- **History** — a 60-minute sparkline in the panel; a week of samples in SQLite for "what ate RAM overnight"
 
-## Features
+## Architecture
 
-- **Menu Bar Icon** - Shows current RAM percentage with color-coded status (green/amber/red)
-- **Quick Popover** - Click to see memory breakdown by app
-- **Expandable Details**:
-  - Claude Code sessions (click to expand, see each project, TTY, helper counts, and full child-process memory)
-  - Chrome tabs (click to expand, see memory per tab)
-- **Click-to-Activate** - Click any app row (Python, VS Code, Slack, etc.) to bring it to foreground
-- **Smart Diagnostics** - Warnings for high memory, oversized Claude sessions, and helpers left behind by closed sessions
+One repo, three consumers of one collection pipeline:
+
+- `rambar collect` — a launchd agent sampling every 5 s via libproc syscalls (no `ps`, no parsing, no AppleScript) into `~/.rambar/rambar.sqlite`
+- **Rambar.app** — a SwiftUI MenuBarExtra that only reads the store; the UI owns no collection state
+- `rambar` CLI + `rambar mcp` — the same ledger for terminals and for agents themselves; a Claude session can ask how much memory it is using
+
+`RambarKit` (attribution: tree grouping, orphan tracking, dedup, trends) is a pure library with no system dependencies, tested against fixture topologies modeled on real machines.
 
 ## Install
 
-### Homebrew (Recommended)
-
-```bash
-brew tap maxghenis/tap
-brew install --cask rambar
-```
-
-### Download
-
-1. Download `RAMBar.zip` from [Releases](../../releases)
-2. Unzip and drag RAMBar to Applications
-3. Launch RAMBar from Applications
-4. **First launch**: macOS will block the app since it's not notarized. To open it:
-   - Open **System Settings → Privacy & Security**
-   - Scroll down to see **"RAMBar" was blocked**
-   - Click **Open Anyway** and enter your password
-
-### Build from Source
-
 ```bash
 git clone https://github.com/MaxGhenis/rambar.git
-cd rambar/RAMBar
-xcodebuild -scheme RAMBar -configuration Release build
-open build/Build/Products/Release/RAMBar.app
+cd rambar
+swift build -c release
+./.build/release/rambar install-daemon   # start the collector (launchd)
+scripts/bundle-app.sh release            # assemble dist/Rambar.app
+open dist/Rambar.app                     # menu bar face
 ```
 
-## Usage
+`rambar doctor` verifies every layer. `rambar uninstall-daemon` removes the collector and keeps your data.
 
-- **Click** the menu bar icon to open the popover
-- **Click Claude Code or Chrome rows** to expand and see sessions/tabs
-- **Click other app rows** (Python, VS Code, etc.) to bring that app to foreground
-- **Click diagnostics** to take action (open Activity Monitor, switch to app)
+## CLI
+
+```
+rambar top             # sessions and system memory (works even without the daemon)
+rambar sessions --json # machine-readable session list
+rambar events          # pressure transitions, orphans, session starts/ends
+rambar doctor          # check collection, store freshness, launchd
+rambar mcp             # MCP stdio server: memory_status, list_sessions, session_history
+```
+
+Register the MCP server so agents can read the ledger:
+
+```bash
+claude mcp add rambar -- ~/.rambar/bin/rambar mcp
+```
 
 ## Requirements
 
 - macOS 14.0+
-- Automation permission for Chrome/VS Code tab enumeration (optional, grants richer details)
+- No special permissions: collection is same-user libproc; no AppleScript, no accessibility, no screen recording
+
+## v1
+
+The original app-centric monitor (per-app rows, Chrome tabs, retro theme) lives in [`RAMBar/`](RAMBar/) and still builds:
+
+```bash
+cd RAMBar && xcodebuild -scheme RAMBar -configuration Release build
+```
 
 ## License
 
-MIT
+[Unlicense](LICENSE) — public domain.
