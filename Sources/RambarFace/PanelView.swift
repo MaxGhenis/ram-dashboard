@@ -51,7 +51,9 @@ struct PanelView: View {
                     .padding(.horizontal, 8)
                     .padding(.vertical, 8)
                 }
-                .frame(maxHeight: 380)
+                // ScrollView has no intrinsic height and collapses inside a
+                // MenuBarExtra window — size it to the content, capped.
+                .frame(height: sessionListHeight)
             }
 
             if hasHygiene {
@@ -310,6 +312,15 @@ struct PanelView: View {
                 .fixedSize()
             }
         }
+    }
+
+    private var sessionListHeight: CGFloat {
+        let rows = CGFloat(model.sessions.count) * 38
+        let headers = CGFloat(model.familyGroups.count) * 27
+        let expansion = model.expandedKey == nil
+            ? 0
+            : CGFloat(max(model.expandedChildren.count, 1)) * 20 + 10
+        return min(rows + headers + expansion + 16, 380)
     }
 
     private let snapshotRowLimit = 12
