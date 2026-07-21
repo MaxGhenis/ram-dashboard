@@ -20,6 +20,40 @@ struct RambarFaceApp: App {
             exit(0)
         }
 
+        // Host the live panel in a regular window at a fixed position —
+        // for screen recordings and UI automation, where the transient
+        // MenuBarExtra popover dismisses too eagerly.
+        if CommandLine.arguments.contains("--demo-window") {
+            model.start()
+            // Matte backdrop so recordings show the panel, not the desktop.
+            let backdrop = NSWindow(
+                contentRect: NSRect(x: 150, y: 120, width: 444, height: 820),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: false
+            )
+            backdrop.backgroundColor = NSColor(calibratedWhite: 0.07, alpha: 1)
+            backdrop.level = .floating
+            backdrop.orderFront(nil)
+
+            let window = NSWindow(
+                contentRect: NSRect(x: 200, y: 200, width: 344, height: 10),
+                styleMask: [.titled, .fullSizeContentView],
+                backing: .buffered,
+                defer: false
+            )
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.level = .floating
+            window.contentViewController = NSHostingController(
+                rootView: PanelView(model: model).background(.regularMaterial)
+            )
+            window.makeKeyAndOrderFront(nil)
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
         model.start()
     }
 
