@@ -44,6 +44,56 @@ final class SessionIndexTests: XCTestCase {
         XCTAssertNil(index.sessionID(family: .codex, cwd: "/Users/x/proj", rootStart: rootStart))
     }
 
+    func testTitleComesFromFirstUserMessage() throws {
+        let home = NSTemporaryDirectory() + "rambar-home-\(UUID().uuidString)"
+        let projectDirectory = home + "/.claude/projects/-Users-x-proj"
+        try FileManager.default.createDirectory(
+            atPath: projectDirectory, withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: home) }
+
+        // Shape observed in live ccd transcripts: queue-operation first.
+        let queued = """
+        {"type":"queue-operation","operation":"enqueue","content":"review the rambar prs/issues"}
+        {"type":"user","message":{"role":"user","content":"review the rambar prs/issues"}}
+        """
+        try queued.write(
+            toFile: projectDirectory + "/queued.jsonl", atomically: true, encoding: .utf8
+        )
+
+        // CLI shape: user entry with content blocks, preceded by noise.
+        let blocks = """
+        {"type":"summary","summary":"whatever"}
+        {"type":"user","message":{"role":"user","content":[{"type":"text","text":"  fix the\\nlogin bug   now"}]}}
+        """
+        try blocks.write(
+            toFile: projectDirectory + "/blocks.jsonl", atomically: true, encoding: .utf8
+        )
+
+        let index = SessionIndex(home: home)
+        XCTAssertEqual(
+            index.title(family: .claude, cwd: "/Users/x/proj", sessionID: "queued"),
+            "review the rambar prs/issues"
+        )
+        XCTAssertEqual(
+            index.title(family: .claude, cwd: "/Users/x/proj", sessionID: "blocks"),
+            "fix the login bug now"
+        )
+        XCTAssertNil(index.title(family: .claude, cwd: "/Users/x/proj", sessionID: "missing"))
+    }
+
+    func testCleanTitleStripsMarkupAndTruncates() {
+        // Tags are stripped, their inner text kept — a /prep transcript still
+        // gets a name.
+        XCTAssertEqual(
+            cleanTitle("<command-message>prep</command-message> run the briefing"),
+            "prep run the briefing"
+        )
+        XCTAssertNil(cleanTitle("<tag></tag>  \n "))
+        let long = String(repeating: "a", count: 80)
+        XCTAssertEqual(cleanTitle(long)?.count, 60)
+    }
+
     func testSharedCwdSessionsGetNoID() {
         let engine = "/Users/dev/.local/share/claude/versions/1/claude"
         let samples = [

@@ -15,6 +15,7 @@ public struct SessionRecord: Sendable {
     public let rootPid: Int32
     public let rootStart: Double
     public let sessionID: String?
+    public let title: String?
     public let firstSeen: Double
     public let lastSeen: Double
     public let footprint: UInt64
@@ -24,10 +25,15 @@ public struct SessionRecord: Sendable {
         sessionNeedsAttention(footprint: footprint, processCount: processCount)
     }
 
+    /// What the UI leads with: the conversation's first message when the
+    /// transcript is verifiably this session's, else the project.
+    public var displayName: String { title ?? project }
+
     public init(
         key: String, family: AgentFamily, project: String, cwd: String?,
         mode: SessionMode, rootPid: Int32, rootStart: Double, sessionID: String?,
-        firstSeen: Double, lastSeen: Double, footprint: UInt64, processCount: Int
+        title: String?, firstSeen: Double, lastSeen: Double,
+        footprint: UInt64, processCount: Int
     ) {
         self.key = key
         self.family = family
@@ -37,6 +43,7 @@ public struct SessionRecord: Sendable {
         self.rootPid = rootPid
         self.rootStart = rootStart
         self.sessionID = sessionID
+        self.title = title
         self.firstSeen = firstSeen
         self.lastSeen = lastSeen
         self.footprint = footprint
@@ -108,12 +115,15 @@ public final class Store {
                 root_pid INTEGER NOT NULL,
                 root_start REAL NOT NULL,
                 session_id TEXT,
+                title TEXT,
                 first_seen REAL NOT NULL,
                 last_seen REAL NOT NULL,
                 footprint INTEGER NOT NULL DEFAULT 0,
                 procs INTEGER NOT NULL DEFAULT 0
             )
             """)
+        // Pre-title databases in the wild: additive migration, ignore if present.
+        try? execute("ALTER TABLE session ADD COLUMN title TEXT")
         try execute("""
             CREATE TABLE IF NOT EXISTS sample(
                 ts REAL NOT NULL,
@@ -225,26 +235,47 @@ public final class Store {
 
     // MARK: - Writes (daemon only)
 
+    public struct SessionIdentity: Sendable {
+        public let sessionID: String?
+        public let title: String?
+        /// True when transcript matching was ambiguous for this key — the
+        /// stored id/title must be CLEARED, not merely left unrefreshed. A
+        /// stale id that was right once and wrong now is worse than none.
+        public let ambiguous: Bool
+
+        public init(sessionID: String?, title: String?, ambiguous: Bool) {
+            self.sessionID = sessionID
+            self.title = title
+            self.ambiguous = ambiguous
+        }
+    }
+
     public func record(
         ts: Double,
         trees: [AgentSessionTree],
-        sessionIDs: [String: String],
+        identities: [String: SessionIdentity],
         home: String
     ) throws {
         try execute("BEGIN")
         do {
             for tree in trees {
                 let footprint = Int64(bitPattern: tree.footprint)
+                let identity = identities[tree.key]
+                    ?? SessionIdentity(sessionID: nil, title: nil, ambiguous: false)
+                let ambiguousFlag: Int64 = identity.ambiguous ? 1 : 0
                 try execute("""
                     INSERT INTO session(key, family, project, cwd, mode, root_pid, root_start,
-                                        session_id, first_seen, last_seen, footprint, procs)
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+                                        session_id, title, first_seen, last_seen, footprint, procs)
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                     ON CONFLICT(key) DO UPDATE SET
                         last_seen=excluded.last_seen,
                         footprint=excluded.footprint,
                         procs=excluded.procs,
                         mode=excluded.mode,
-                        session_id=COALESCE(excluded.session_id, session.session_id)
+                        session_id=CASE WHEN ?=1 THEN NULL
+                                        ELSE COALESCE(excluded.session_id, session.session_id) END,
+                        title=CASE WHEN ?=1 THEN NULL
+                                   ELSE COALESCE(excluded.title, session.title) END
                     """, [
                         .text(tree.key),
                         .text(tree.family.rawValue),
@@ -253,11 +284,14 @@ public final class Store {
                         .text(tree.mode.rawValue),
                         .int(Int64(tree.root.pid)),
                         .real(tree.root.startTime),
-                        .textOrNull(sessionIDs[tree.key]),
+                        .textOrNull(identity.ambiguous ? nil : identity.sessionID),
+                        .textOrNull(identity.ambiguous ? nil : identity.title),
                         .real(ts),
                         .real(ts),
                         .int(footprint),
                         .int(Int64(tree.processCount)),
+                        .int(ambiguousFlag),
+                        .int(ambiguousFlag),
                     ])
                 try execute(
                     "INSERT INTO sample(ts, key, footprint, procs) VALUES(?,?,?,?)",
@@ -391,15 +425,16 @@ public final class Store {
             rootPid: Int32(sqlite3_column_int64(statement, 5)),
             rootStart: sqlite3_column_double(statement, 6),
             sessionID: optionalText(statement, 7),
-            firstSeen: sqlite3_column_double(statement, 8),
-            lastSeen: sqlite3_column_double(statement, 9),
-            footprint: UInt64(bitPattern: sqlite3_column_int64(statement, 10)),
-            processCount: Int(sqlite3_column_int64(statement, 11))
+            title: optionalText(statement, 8),
+            firstSeen: sqlite3_column_double(statement, 9),
+            lastSeen: sqlite3_column_double(statement, 10),
+            footprint: UInt64(bitPattern: sqlite3_column_int64(statement, 11)),
+            processCount: Int(sqlite3_column_int64(statement, 12))
         )
     }
 
     private static let sessionColumns =
-        "key, family, project, cwd, mode, root_pid, root_start, session_id, first_seen, last_seen, footprint, procs"
+        "key, family, project, cwd, mode, root_pid, root_start, session_id, title, first_seen, last_seen, footprint, procs"
 
     /// Sessions observed within the staleness window, largest first.
     public func activeSessions(now: Double, staleAfter: Double = 20) -> [SessionRecord] {

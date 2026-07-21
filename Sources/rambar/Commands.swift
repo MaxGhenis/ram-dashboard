@@ -44,7 +44,7 @@ private func printTop() {
         let attention = session.needsAttention ? "  HIGH" : ""
         print(
             pad(session.family.rawValue, 8)
-            + pad(String(session.project.prefix(24)), 26)
+            + pad(String(session.displayName.prefix(24)), 26)
             + pad(session.mode.label, 10)
             + padLeft(formatBytes(session.footprint), 10)
             + padLeft("\(session.processCount)", 7)
@@ -69,7 +69,7 @@ func runSessions(json: Bool) {
     }
     for session in sessions {
         let id = session.sessionID.map { " · \($0.prefix(8))" } ?? ""
-        print("\(session.project) [\(session.family.rawValue)/\(session.mode.label)]"
+        print("\(session.displayName) [\(session.family.rawValue)/\(session.mode.label)]"
             + " \(formatBytes(session.footprint)) · \(session.processCount) procs"
             + " · pid \(session.rootPid)\(id)")
     }

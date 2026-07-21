@@ -22,6 +22,7 @@ public final class Daemon {
     private let interval: TimeInterval
 
     private var tracker = OrphanTracker()
+    private var identityCache: [String: Store.SessionIdentity] = [:]
     private var timer: DispatchSourceTimer?
     private var pressureWatcher: PressureWatcher?
     private var lastPressure: PressureLevel = .normal
@@ -68,18 +69,38 @@ public final class Daemon {
         let trees = buildSessionTrees(samples)
         let orphanReport = tracker.update(samples: samples, trees: trees)
 
-        var sessionIDs: [String: String] = [:]
+        var identities: [String: Store.SessionIdentity] = [:]
         let unambiguous = keysWithUnambiguousCwd(trees)
-        for tree in trees where unambiguous.contains(tree.key) {
+        for tree in trees {
+            guard unambiguous.contains(tree.key) else {
+                identities[tree.key] = Store.SessionIdentity(
+                    sessionID: nil, title: nil, ambiguous: true
+                )
+                identityCache.removeValue(forKey: tree.key)
+                continue
+            }
+            if let cached = identityCache[tree.key] {
+                identities[tree.key] = cached
+                continue
+            }
             if let id = index.sessionID(
                 family: tree.family, cwd: tree.root.cwd, rootStart: tree.root.startTime
             ) {
-                sessionIDs[tree.key] = id
+                let identity = Store.SessionIdentity(
+                    sessionID: id,
+                    title: index.title(family: tree.family, cwd: tree.root.cwd, sessionID: id),
+                    ambiguous: false
+                )
+                identities[tree.key] = identity
+                identityCache[tree.key] = identity
             }
+        }
+        identityCache = identityCache.filter { key, _ in
+            trees.contains { $0.key == key }
         }
 
         do {
-            try store.record(ts: now, trees: trees, sessionIDs: sessionIDs, home: home)
+            try store.record(ts: now, trees: trees, identities: identities, home: home)
             try store.recordOrphanState(
                 ts: now, report: orphanReport, duplicates: findDuplicates(in: trees)
             )

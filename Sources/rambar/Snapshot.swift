@@ -35,7 +35,17 @@ func liveSessions(now: Double) -> [SessionRecord] {
     let trees = buildSessionTrees(collectProcessSamples())
     let unambiguous = keysWithUnambiguousCwd(trees)
     return trees.map { tree in
-        SessionRecord(
+        var sessionID: String?
+        var title: String?
+        if unambiguous.contains(tree.key) {
+            sessionID = index.sessionID(
+                family: tree.family, cwd: tree.root.cwd, rootStart: tree.root.startTime
+            )
+            if let sessionID {
+                title = index.title(family: tree.family, cwd: tree.root.cwd, sessionID: sessionID)
+            }
+        }
+        return SessionRecord(
             key: tree.key,
             family: tree.family,
             project: tree.projectName(home: home),
@@ -43,11 +53,8 @@ func liveSessions(now: Double) -> [SessionRecord] {
             mode: tree.mode,
             rootPid: tree.root.pid,
             rootStart: tree.root.startTime,
-            sessionID: unambiguous.contains(tree.key)
-                ? index.sessionID(
-                    family: tree.family, cwd: tree.root.cwd, rootStart: tree.root.startTime
-                )
-                : nil,
+            sessionID: sessionID,
+            title: title,
             firstSeen: now,
             lastSeen: now,
             footprint: tree.footprint,
@@ -80,6 +87,7 @@ struct SessionJSON: Codable {
     let key: String
     let family: String
     let project: String
+    let title: String?
     let mode: String
     let pid: Int32
     let sessionId: String?
@@ -94,6 +102,7 @@ struct SessionJSON: Codable {
         key = record.key
         family = record.family.rawValue
         project = record.project
+        title = record.title
         mode = record.mode.rawValue
         pid = record.rootPid
         sessionId = record.sessionID

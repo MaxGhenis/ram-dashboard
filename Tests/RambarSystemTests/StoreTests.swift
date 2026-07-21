@@ -32,7 +32,7 @@ final class StoreTests: XCTestCase {
 
     func testRecordAndReadBackActiveSessions() throws {
         let alpha = tree(pid: 50, project: "alpha", mb: 400)
-        try store.record(ts: 1_000, trees: [alpha], sessionIDs: [alpha.key: "abc123"], home: "/Users/dev")
+        try store.record(ts: 1_000, trees: [alpha], identities: [alpha.key: .init(sessionID: "abc123", title: "fix the flux capacitor", ambiguous: false)], home: "/Users/dev")
 
         let sessions = store.activeSessions(now: 1_005)
         XCTAssertEqual(sessions.count, 1)
@@ -45,18 +45,42 @@ final class StoreTests: XCTestCase {
 
     func testUpsertPreservesFirstSeenAndSessionID() throws {
         let alpha = tree(pid: 50, project: "alpha", mb: 400)
-        try store.record(ts: 1_000, trees: [alpha], sessionIDs: [alpha.key: "abc123"], home: "/Users/dev")
-        try store.record(ts: 1_005, trees: [alpha], sessionIDs: [:], home: "/Users/dev")
+        try store.record(ts: 1_000, trees: [alpha], identities: [alpha.key: .init(sessionID: "abc123", title: "fix the flux capacitor", ambiguous: false)], home: "/Users/dev")
+        try store.record(ts: 1_005, trees: [alpha], identities: [:], home: "/Users/dev")
 
         let session = store.activeSessions(now: 1_006)[0]
         XCTAssertEqual(session.firstSeen, 1_000)
         XCTAssertEqual(session.lastSeen, 1_005)
         XCTAssertEqual(session.sessionID, "abc123", "a missed lookup must not erase a known id")
+        XCTAssertEqual(session.title, "fix the flux capacitor")
+        XCTAssertEqual(session.displayName, "fix the flux capacitor")
+    }
+
+    func testAmbiguityClearsStaleIdentity() throws {
+        // An id captured during a momentary uniqueness window must not stick
+        // once the cwd becomes shared again — a stale name that was right
+        // once and wrong now is worse than showing the pid.
+        let alpha = tree(pid: 50, project: "alpha", mb: 400)
+        try store.record(
+            ts: 1_000, trees: [alpha],
+            identities: [alpha.key: .init(sessionID: "abc123", title: "old ask", ambiguous: false)],
+            home: "/Users/dev"
+        )
+        try store.record(
+            ts: 1_005, trees: [alpha],
+            identities: [alpha.key: .init(sessionID: nil, title: nil, ambiguous: true)],
+            home: "/Users/dev"
+        )
+
+        let session = store.activeSessions(now: 1_006)[0]
+        XCTAssertNil(session.sessionID)
+        XCTAssertNil(session.title)
+        XCTAssertEqual(session.displayName, "alpha")
     }
 
     func testStaleSessionsExcluded() throws {
         let alpha = tree(pid: 50, project: "alpha", mb: 400)
-        try store.record(ts: 1_000, trees: [alpha], sessionIDs: [:], home: "/Users/dev")
+        try store.record(ts: 1_000, trees: [alpha], identities: [:], home: "/Users/dev")
         XCTAssertEqual(store.activeSessions(now: 1_100).count, 0)
     }
 
@@ -64,7 +88,7 @@ final class StoreTests: XCTestCase {
         let alpha = tree(pid: 50, project: "alpha", mb: 100)
         for step in 0..<10 {
             let grown = tree(pid: 50, project: "alpha", mb: 100 + UInt64(step) * 10)
-            try store.record(ts: Double(step) * 5, trees: [grown], sessionIDs: [:], home: "/Users/dev")
+            try store.record(ts: Double(step) * 5, trees: [grown], identities: [:], home: "/Users/dev")
         }
         let history = store.sessionHistory(key: alpha.key, since: 0)
         XCTAssertEqual(history.count, 10)
@@ -96,14 +120,14 @@ final class StoreTests: XCTestCase {
         for step in 0..<24 {
             try store.record(
                 ts: now - 3 * 3_600 + Double(step) * 5,
-                trees: [alpha], sessionIDs: [:], home: "/Users/dev"
+                trees: [alpha], identities: [:], home: "/Users/dev"
             )
         }
         // Fresh samples stay raw.
         for step in 0..<6 {
             try store.record(
                 ts: now - 30 + Double(step) * 5,
-                trees: [alpha], sessionIDs: [:], home: "/Users/dev"
+                trees: [alpha], identities: [:], home: "/Users/dev"
             )
         }
         try store.compact(now: now)

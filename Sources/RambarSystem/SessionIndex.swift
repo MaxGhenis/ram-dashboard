@@ -44,6 +44,56 @@ public struct SessionIndex {
         }
         return best?.stem
     }
+
+    /// A human name for a session: its first user message, cleaned and
+    /// truncated. Read from the transcript jsonl — the only on-disk source
+    /// that exists for every session. (ccd's own sidebar titles live in
+    /// Electron IndexedDB, which is not a sane read dependency.)
+    public func title(family: AgentFamily, cwd: String?, sessionID: String) -> String? {
+        guard family == .claude, let cwd, !cwd.isEmpty else { return nil }
+        let path = claudeProjectsRoot + "/"
+            + Self.encodeClaudeProjectDirectory(cwd: cwd) + "/" + sessionID + ".jsonl"
+        guard let handle = FileHandle(forReadingAtPath: path),
+              let head = try? handle.read(upToCount: 256 * 1024) else { return nil }
+        defer { try? handle.close() }
+
+        for lineData in head.split(separator: UInt8(ascii: "\n")).prefix(40) {
+            guard let entry = try? JSONSerialization.jsonObject(with: Data(lineData))
+                    as? [String: Any] else { continue }
+            switch entry["type"] as? String {
+            case "queue-operation":
+                if let content = entry["content"] as? String, !content.isEmpty {
+                    return cleanTitle(content)
+                }
+            case "user":
+                let message = entry["message"] as? [String: Any]
+                if let text = message?["content"] as? String {
+                    return cleanTitle(text)
+                }
+                if let blocks = message?["content"] as? [[String: Any]],
+                   let text = blocks.first(where: { $0["type"] as? String == "text" })?["text"] as? String {
+                    return cleanTitle(text)
+                }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+}
+
+/// Strip markup (slash-command wrappers), collapse whitespace, truncate.
+func cleanTitle(_ raw: String) -> String? {
+    var text = raw
+    while let open = text.firstIndex(of: "<"), let close = text[open...].firstIndex(of: ">") {
+        text.removeSubrange(open...close)
+    }
+    let collapsed = text
+        .components(separatedBy: .whitespacesAndNewlines)
+        .filter { !$0.isEmpty }
+        .joined(separator: " ")
+    guard !collapsed.isEmpty else { return nil }
+    return collapsed.count > 60 ? String(collapsed.prefix(59)) + "…" : collapsed
 }
 
 /// Session keys whose root cwd is used by exactly one active session.

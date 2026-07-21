@@ -160,7 +160,7 @@ struct PanelView: View {
             } label: {
                 HStack(alignment: .center) {
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(session.project)
+                        Text(session.displayName)
                             .font(.system(size: 13, weight: .medium))
                             .lineLimit(1)
                         Text(subtitle(for: session))
@@ -222,7 +222,13 @@ struct PanelView: View {
     }
 
     private func subtitle(for session: SessionRecord) -> String {
-        var parts = [session.mode.label]
+        var parts: [String] = []
+        // When the title leads, the project still earns its place below —
+        // unless it is just "~", which says nothing.
+        if session.title != nil, session.project != "~" {
+            parts.append(session.project)
+        }
+        parts.append(session.mode.label)
         if let id = session.sessionID {
             parts.append(String(id.prefix(8)))
         } else {
