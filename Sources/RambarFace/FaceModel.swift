@@ -24,6 +24,7 @@ final class FaceModel: ObservableObject {
     @Published var sessionInterventionStates: [String: SessionTreeInterventionState] = [:]
     @Published var interventionMessages: [String: String] = [:]
     @Published var interveningKeys: Set<String> = []
+    @Published var forceEndRequiredKeys: Set<String> = []
     @Published var autoPauseEnabled: Bool
     @Published var settingsError: String?
 
@@ -136,6 +137,7 @@ final class FaceModel: ObservableObject {
         interventionMessages = interventionMessages.filter {
             activeKeys.contains($0.key)
         }
+        forceEndRequiredKeys.formIntersection(activeKeys)
         if let expandedGroupKey,
            !processGroups.contains(where: { $0.key == expandedGroupKey }) {
             self.expandedGroupKey = nil
@@ -197,15 +199,22 @@ final class FaceModel: ObservableObject {
 
         Task.detached(priority: .userInitiated) {
             let result = performSessionIntervention(root: root, action: action)
-            let observedState = buildSessionTrees(collectProcessSamples())
+            // Signal delivery is not the outcome. In particular, a terminal
+            // can immediately stop a continued background job again, and a
+            // stopped process can keep SIGTERM pending indefinitely.
+            await waitForSessionInterventionSettlement(root: root, action: action)
+            let observedTree = buildSessionTrees(collectProcessSamples())
                 .first { $0.root.identity == root }
-                .map(sessionTreeInterventionState)
+            let observedState = observedTree.map(sessionTreeInterventionState)
+            let terminalForegroundMismatch = processTerminalState(root)?
+                .isInBackgroundProcessGroup ?? false
             await MainActor.run { [weak self] in
                 self?.finishIntervention(
                     result,
                     action: action,
                     key: key,
-                    observedState: observedState
+                    observedState: observedState,
+                    terminalForegroundMismatch: terminalForegroundMismatch
                 )
             }
         }
@@ -215,7 +224,8 @@ final class FaceModel: ObservableObject {
         _ result: SessionInterventionResult,
         action: SessionInterventionAction,
         key: String,
-        observedState: SessionTreeInterventionState?
+        observedState: SessionTreeInterventionState?,
+        terminalForegroundMismatch: Bool
     ) {
         interveningKeys.remove(key)
         if let observedState {
@@ -224,31 +234,19 @@ final class FaceModel: ObservableObject {
             sessionInterventionStates.removeValue(forKey: key)
         }
 
-        if !result.foundSession {
-            interventionMessages[key] = "Session ended before it could be signaled."
-        } else if result.completedAllTargets {
-            let verb: String
-            switch action {
-            case .interrupt: verb = "Interrupt sent to"
-            case .pause: verb = "Paused"
-            case .resume: verb = "Resumed"
-            case .terminate: verb = "End requested for"
+        let feedback = interventionFeedback(
+            result: result,
+            action: action,
+            observedState: observedState,
+            terminalForegroundMismatch: terminalForegroundMismatch
+        )
+        interventionMessages[key] = feedback.message
+        if action == .terminate || action == .forceTerminate {
+            if feedback.requiresForceEnd {
+                forceEndRequiredKeys.insert(key)
+            } else {
+                forceEndRequiredKeys.remove(key)
             }
-            let noun = result.signaledProcessCount == 1 ? "process" : "processes"
-            interventionMessages[key] = "\(verb) \(result.signaledProcessCount) \(noun)."
-        } else {
-            let label: String
-            switch action {
-            case .interrupt: label = "Interrupt incomplete"
-            case .pause: label = "Pause incomplete"
-            case .resume: label = "Resume incomplete"
-            case .terminate: label = "End request incomplete"
-            }
-            interventionMessages[key] = "\(label): "
-                + "\(result.signaledProcessCount) of \(result.targetedProcessCount) signaled"
-                + " · \(result.failedProcessCount) failed"
-                + " · \(result.staleProcessCount) stale"
-                + " · \(result.missedProcessCount) missed."
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.75) { [weak self] in
             self?.refresh()
@@ -371,6 +369,156 @@ final class FaceModel: ObservableObject {
     func sessions(for group: ProcessGroup) -> [SessionRecord] {
         guard let family = group.family else { return [] }
         return sessions.filter { $0.family == family }
+    }
+}
+
+struct InterventionFeedback: Equatable {
+    let message: String
+    let requiresForceEnd: Bool
+}
+
+func interventionFeedback(
+    result: SessionInterventionResult,
+    action: SessionInterventionAction,
+    observedState: SessionTreeInterventionState?,
+    terminalForegroundMismatch: Bool
+) -> InterventionFeedback {
+    guard result.foundSession else {
+        return InterventionFeedback(
+            message: "Session ended before it could be signaled.",
+            requiresForceEnd: false
+        )
+    }
+
+    if observedState == nil {
+        switch action {
+        case .terminate:
+            return InterventionFeedback(message: "Session ended.", requiresForceEnd: false)
+        case .forceTerminate:
+            return InterventionFeedback(
+                message: "Session force ended.",
+                requiresForceEnd: false
+            )
+        default:
+            break
+        }
+    }
+
+    guard result.completedAllTargets else {
+        let label: String
+        switch action {
+        case .interrupt: label = "Interrupt incomplete"
+        case .pause: label = "Pause incomplete"
+        case .resume: label = "Resume incomplete"
+        case .terminate: label = "End request incomplete"
+        case .forceTerminate: label = "Force End incomplete"
+        }
+        return InterventionFeedback(
+            message: "\(label): "
+                + "\(result.signaledProcessCount) of \(result.targetedProcessCount) signaled"
+                + " · \(result.failedProcessCount) failed"
+                + " · \(result.staleProcessCount) stale"
+                + " · \(result.missedProcessCount) missed.",
+            requiresForceEnd: (action == .terminate || action == .forceTerminate)
+                && observedState != nil
+        )
+    }
+
+    let noun = result.signaledProcessCount == 1 ? "process" : "processes"
+    switch action {
+    case .interrupt:
+        return InterventionFeedback(
+            message: "Interrupt sent to \(result.signaledProcessCount) \(noun).",
+            requiresForceEnd: false
+        )
+    case .pause:
+        guard let observedState else {
+            return InterventionFeedback(message: "Session ended.", requiresForceEnd: false)
+        }
+        guard observedState.status != .running else {
+            return InterventionFeedback(
+                message: "Pause did not take effect.",
+                requiresForceEnd: false
+            )
+        }
+        return InterventionFeedback(
+            message: "Paused \(observedState.stoppedProcessCount) of "
+                + "\(observedState.processCount) processes.",
+            requiresForceEnd: false
+        )
+    case .resume:
+        guard let observedState else {
+            return InterventionFeedback(
+                message: "Session ended while resuming.",
+                requiresForceEnd: false
+            )
+        }
+        guard observedState.status == .running else {
+            let message = terminalForegroundMismatch
+                ? "The terminal reclaimed this job. Open its original terminal and run `fg`."
+                : "Resume did not take effect; \(observedState.stoppedProcessCount) processes remain stopped."
+            return InterventionFeedback(message: message, requiresForceEnd: false)
+        }
+        return InterventionFeedback(
+            message: "Resumed \(observedState.processCount) processes.",
+            requiresForceEnd: false
+        )
+    case .terminate:
+        guard observedState == nil else {
+            return InterventionFeedback(
+                message: "Session did not end gracefully. Use Force End to stop it immediately.",
+                requiresForceEnd: true
+            )
+        }
+        return InterventionFeedback(message: "Session ended.", requiresForceEnd: false)
+    case .forceTerminate:
+        guard observedState == nil else {
+            return InterventionFeedback(
+                message: "Force End did not remove the verified process tree.",
+                requiresForceEnd: true
+            )
+        }
+        return InterventionFeedback(message: "Session force ended.", requiresForceEnd: false)
+    }
+}
+
+private func waitForSessionInterventionSettlement(
+    root: ProcessIdentity,
+    action: SessionInterventionAction,
+    timeout: TimeInterval = 2
+) async {
+    guard action != .interrupt else { return }
+    let deadline = Date().addingTimeInterval(timeout)
+    var stableSince: Date?
+
+    while Date() < deadline {
+        let stopped = processIsStopped(root)
+        let reachedExpectedState: Bool
+        let requiredStableDuration: TimeInterval
+        switch action {
+        case .interrupt:
+            return
+        case .pause:
+            reachedExpectedState = stopped == true
+            requiredStableDuration = 0.15
+        case .resume:
+            reachedExpectedState = stopped == false
+            requiredStableDuration = 0.3
+        case .terminate, .forceTerminate:
+            reachedExpectedState = stopped == nil
+            requiredStableDuration = 0
+        }
+
+        if reachedExpectedState {
+            let now = Date()
+            if stableSince == nil { stableSince = now }
+            if now.timeIntervalSince(stableSince!) >= requiredStableDuration {
+                return
+            }
+        } else {
+            stableSince = nil
+        }
+        try? await Task<Never, Never>.sleep(for: .milliseconds(50))
     }
 }
 

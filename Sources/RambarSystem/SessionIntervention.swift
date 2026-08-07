@@ -7,6 +7,7 @@ public enum SessionInterventionAction: String, Equatable, Sendable {
     case pause
     case resume
     case terminate
+    case forceTerminate
 }
 
 public struct SessionInterventionResult: Equatable, Sendable {
@@ -74,6 +75,32 @@ public func processIsStopped(_ identity: ProcessIdentity) -> Bool? {
     return info.status == SSTOP
 }
 
+public struct ProcessTerminalState: Equatable, Sendable {
+    public let processGroupID: Int32
+    public let foregroundProcessGroupID: Int32
+    public let hasControllingTerminal: Bool
+
+    public var isInBackgroundProcessGroup: Bool {
+        hasControllingTerminal
+            && processGroupID > 0
+            && foregroundProcessGroupID > 0
+            && processGroupID != foregroundProcessGroupID
+    }
+}
+
+/// Job-control state for a verified process identity. A resumed process in a
+/// background terminal process group can be stopped again by SIGTTIN before
+/// its application-level signal handlers get a chance to run.
+public func processTerminalState(_ identity: ProcessIdentity) -> ProcessTerminalState? {
+    guard let info = Proc.basicInfo(identity.pid),
+          info.startTime == identity.start else { return nil }
+    return ProcessTerminalState(
+        processGroupID: info.processGroupID,
+        foregroundProcessGroupID: info.terminalForegroundProcessGroupID,
+        hasControllingTerminal: info.hasControllingTerminal
+    )
+}
+
 func performSessionIntervention(
     root: ProcessIdentity,
     action: SessionInterventionAction,
@@ -115,6 +142,7 @@ func performSessionIntervention(
         case .pause: primarySignal = SIGSTOP
         case .resume: primarySignal = SIGCONT
         case .terminate: primarySignal = SIGTERM
+        case .forceTerminate: primarySignal = SIGKILL
         }
 
         if sendSignal(target.pid, primarySignal) == 0 {

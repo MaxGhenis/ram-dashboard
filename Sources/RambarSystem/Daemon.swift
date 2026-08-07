@@ -90,14 +90,12 @@ public final class Daemon {
         } ?? []
         let interventions: [(RunawayIncident, SessionInterventionResult)] =
             incidents.compactMap { incident in
-                if processIsStopped(incident.root) == true {
+                if processIsStopped(incident.largestProcess) == true {
                     runawayGuard.markContained(sessionKey: incident.sessionKey)
                     return nil
                 }
-                let result = performSessionIntervention(
-                    root: incident.root,
-                    action: RunawayGuard.automaticAction,
-                    trees: trees,
+                let result = performRunawayContainment(
+                    incident,
                     identityLookup: processIdentity,
                     sendSignal: kill
                 )

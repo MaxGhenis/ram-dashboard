@@ -20,6 +20,9 @@ enum Proc {
         let ppid: Int32
         let startTime: Double
         let status: Int32
+        let processGroupID: Int32
+        let terminalForegroundProcessGroupID: Int32
+        let hasControllingTerminal: Bool
     }
 
     static func basicInfo(_ pid: Int32) -> BasicInfo? {
@@ -30,7 +33,10 @@ enum Proc {
         return BasicInfo(
             ppid: Int32(bitPattern: info.pbi_ppid),
             startTime: start,
-            status: Int32(info.pbi_status)
+            status: Int32(info.pbi_status),
+            processGroupID: Int32(bitPattern: info.pbi_pgid),
+            terminalForegroundProcessGroupID: Int32(bitPattern: info.e_tpgid),
+            hasControllingTerminal: info.e_tdev != UInt32.max
         )
     }
 

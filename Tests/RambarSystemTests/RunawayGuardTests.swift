@@ -41,6 +41,59 @@ final class RunawayGuardTests: XCTestCase {
         XCTAssertTrue(incidents.isEmpty)
     }
 
+    func testAutomaticContainmentPausesOnlyLargestProcess() {
+        let session = tree(rootGB: 1, childGB: 9)
+        let largest = session.members.first { $0.pid == 101 }!
+        let incident = RunawayIncident(
+            sessionKey: session.key,
+            root: session.root.identity,
+            largestProcess: largest.identity,
+            largestProcessFootprint: largest.footprint,
+            sessionFootprint: session.footprint,
+            reason: .rapidGrowth
+        )
+        var sent: [(Int32, Int32)] = []
+
+        let result = performRunawayContainment(
+            incident,
+            identityLookup: { pid in session.members.first { $0.pid == pid }?.identity },
+            sendSignal: { pid, signal in sent.append((pid, signal)); return 0 }
+        )
+
+        XCTAssertTrue(result.completedAllTargets)
+        XCTAssertEqual(result.targetedProcessCount, 1)
+        XCTAssertEqual(sent.map { "\($0.0):\($0.1)" }, ["101:\(SIGSTOP)"])
+    }
+
+    func testAutomaticContainmentDoesNotPauseChildAfterRootIdentityChanges() {
+        let session = tree(rootGB: 1, childGB: 9)
+        let largest = session.members.first { $0.pid == 101 }!
+        let incident = RunawayIncident(
+            sessionKey: session.key,
+            root: session.root.identity,
+            largestProcess: largest.identity,
+            largestProcessFootprint: largest.footprint,
+            sessionFootprint: session.footprint,
+            reason: .rapidGrowth
+        )
+        var sent: [(Int32, Int32)] = []
+
+        let result = performRunawayContainment(
+            incident,
+            identityLookup: { pid in
+                if pid == session.root.pid {
+                    return ProcessIdentity(pid: pid, start: 9_999)
+                }
+                return largest.identity
+            },
+            sendSignal: { pid, signal in sent.append((pid, signal)); return 0 }
+        )
+
+        XCTAssertFalse(result.foundSession)
+        XCTAssertEqual(result.staleProcessCount, 1)
+        XCTAssertTrue(sent.isEmpty)
+    }
+
     func testLargeSessionTotalDoesNotTriggerWhenEachProcessIsBelowThreshold() {
         var guardState = RunawayGuard()
         let settings = RunawayGuardSettings(autoPauseEnabled: true)

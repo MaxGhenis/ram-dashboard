@@ -144,3 +144,42 @@ public struct RunawayGuard: Sendable {
         contained.insert(sessionKey)
     }
 }
+
+/// Contain the process that actually crossed the runaway threshold. Stopping
+/// an entire terminal job lets its shell reclaim the foreground process group,
+/// after which SIGCONT alone cannot reliably resume the agent. Keeping an
+/// unaffected root running preserves terminal ownership when a helper is the
+/// runaway process.
+func performRunawayContainment(
+    _ incident: RunawayIncident,
+    identityLookup: (Int32) -> ProcessIdentity?,
+    sendSignal: (Int32, Int32) -> Int32
+) -> SessionInterventionResult {
+    guard identityLookup(incident.root.pid) == incident.root else {
+        return SessionInterventionResult(
+            foundSession: false,
+            targetedProcessCount: 1,
+            signaledProcessCount: 0,
+            staleProcessCount: 1,
+            failedProcessCount: 0
+        )
+    }
+    guard identityLookup(incident.largestProcess.pid) == incident.largestProcess else {
+        return SessionInterventionResult(
+            foundSession: true,
+            targetedProcessCount: 1,
+            signaledProcessCount: 0,
+            staleProcessCount: 1,
+            failedProcessCount: 0
+        )
+    }
+
+    let succeeded = sendSignal(incident.largestProcess.pid, SIGSTOP) == 0
+    return SessionInterventionResult(
+        foundSession: true,
+        targetedProcessCount: 1,
+        signaledProcessCount: succeeded ? 1 : 0,
+        staleProcessCount: 0,
+        failedProcessCount: succeeded ? 0 : 1
+    )
+}

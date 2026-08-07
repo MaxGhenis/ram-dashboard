@@ -87,6 +87,24 @@ final class SessionInterventionTests: XCTestCase {
         XCTAssertEqual(state.runningProcessCount, 2)
     }
 
+    func testTerminalForegroundMismatchRequiresControllingTerminal() {
+        XCTAssertTrue(ProcessTerminalState(
+            processGroupID: 100,
+            foregroundProcessGroupID: 200,
+            hasControllingTerminal: true
+        ).isInBackgroundProcessGroup)
+        XCTAssertFalse(ProcessTerminalState(
+            processGroupID: 100,
+            foregroundProcessGroupID: 100,
+            hasControllingTerminal: true
+        ).isInBackgroundProcessGroup)
+        XCTAssertFalse(ProcessTerminalState(
+            processGroupID: 100,
+            foregroundProcessGroupID: 200,
+            hasControllingTerminal: false
+        ).isInBackgroundProcessGroup)
+    }
+
     func testPauseSignalsOnlyExactSessionMembers() {
         let samples = sessionSamples()
         let trees = buildSessionTrees(samples)
@@ -142,6 +160,24 @@ final class SessionInterventionTests: XCTestCase {
         XCTAssertEqual(sent.map { "\($0.0):\($0.1)" }, [
             "100:\(SIGTERM)", "101:\(SIGTERM)",
             "100:\(SIGCONT)", "101:\(SIGCONT)",
+        ])
+    }
+
+    func testForceTerminateSendsKillWithoutContinue() {
+        let samples = sessionSamples()
+        var sent: [(Int32, Int32)] = []
+
+        let result = performSessionIntervention(
+            root: ProcessIdentity(pid: 100, start: 1_000),
+            action: .forceTerminate,
+            trees: buildSessionTrees(samples),
+            identityLookup: { pid in samples.first { $0.pid == pid }?.identity },
+            sendSignal: { pid, signal in sent.append((pid, signal)); return 0 }
+        )
+
+        XCTAssertEqual(result.signaledProcessCount, 2)
+        XCTAssertEqual(sent.map { "\($0.0):\($0.1)" }, [
+            "100:\(SIGKILL)", "101:\(SIGKILL)",
         ])
     }
 
@@ -294,6 +330,110 @@ final class SessionInterventionTests: XCTestCase {
             sendSignal: kill
         )
         XCTAssertEqual(terminated.signaledProcessCount, 1)
+        process.waitUntilExit()
+    }
+
+    func testForceTerminateStoppedDisposableProcess() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sleep")
+        process.arguments = ["30"]
+        try process.run()
+
+        let pid = Int32(process.processIdentifier)
+        defer {
+            if process.isRunning {
+                _ = kill(pid, SIGKILL)
+                process.waitUntilExit()
+            }
+        }
+
+        let identity = try XCTUnwrap(processIdentity(pid: pid))
+        let trees = buildSessionTrees([ProcessSample(
+            pid: pid,
+            ppid: 1,
+            execPath: "/Users/dev/.local/share/claude/versions/2.1.217",
+            footprint: 1,
+            startTime: identity.start
+        )])
+
+        _ = performSessionIntervention(
+            root: identity,
+            action: .pause,
+            trees: trees,
+            identityLookup: processIdentity,
+            sendSignal: kill
+        )
+        XCTAssertTrue(waitUntil { processIsStopped(identity) == true })
+
+        let terminated = performSessionIntervention(
+            root: identity,
+            action: .forceTerminate,
+            trees: trees,
+            identityLookup: processIdentity,
+            sendSignal: kill
+        )
+
+        XCTAssertEqual(terminated.signaledProcessCount, 1)
+        XCTAssertTrue(waitUntil { processIdentity(pid: pid) == nil })
+        process.waitUntilExit()
+    }
+
+    func testGracefulThenForceTerminateResistantStoppedProcess() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap '' TERM; exec /bin/sleep 30"]
+        try process.run()
+
+        let pid = Int32(process.processIdentifier)
+        defer {
+            if process.isRunning {
+                _ = kill(pid, SIGKILL)
+                process.waitUntilExit()
+            }
+        }
+
+        let identity = try XCTUnwrap(processIdentity(pid: pid))
+        let trees = buildSessionTrees([ProcessSample(
+            pid: pid,
+            ppid: 1,
+            execPath: "/Users/dev/.local/share/claude/versions/2.1.217",
+            footprint: 1,
+            startTime: identity.start
+        )])
+
+        _ = performSessionIntervention(
+            root: identity,
+            action: .pause,
+            trees: trees,
+            identityLookup: processIdentity,
+            sendSignal: kill
+        )
+        XCTAssertTrue(waitUntil { processIsStopped(identity) == true })
+
+        _ = performSessionIntervention(
+            root: identity,
+            action: .terminate,
+            trees: trees,
+            identityLookup: processIdentity,
+            sendSignal: kill
+        )
+        XCTAssertTrue(
+            waitUntil { processIsStopped(identity) == false },
+            "graceful End should continue a stopped process so TERM can be handled"
+        )
+        XCTAssertNotNil(
+            processIdentity(pid: pid),
+            "a TERM-resistant process must remain visible for explicit Force End"
+        )
+
+        _ = performSessionIntervention(
+            root: identity,
+            action: .forceTerminate,
+            trees: trees,
+            identityLookup: processIdentity,
+            sendSignal: kill
+        )
+        XCTAssertTrue(waitUntil { processIdentity(pid: pid) == nil })
         process.waitUntilExit()
     }
 }

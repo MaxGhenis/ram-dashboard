@@ -26,18 +26,22 @@ Group values sum macOS per-process physical footprints. Shared memory can appear
 Expand a Claude Code, Codex, or Gemini session to interrupt its agent root,
 pause or resume its verified process tree, or ask the whole tree to end. Rambar
 checks the process start time immediately before every signal, so a recycled
-PID cannot redirect an action to an unrelated process. Ending a session always
-requires confirmation and uses `SIGTERM`; Rambar never sends `SIGKILL`.
+PID cannot redirect an action to an unrelated process. Ending a session first
+uses confirmed `SIGTERM`. If the verified tree remains alive, Rambar reports
+the failure and offers a separately confirmed **Force End** using `SIGKILL`.
+Resume is verified after signal delivery; terminal job-control failures are
+reported with the required `fg` recovery instead of being called successful.
 
 An optional **Auto-pause runaway sessions** toggle lives in the panel menu and
-is off by default. When enabled, the collector pauses a session after two
-consecutive suspicious samples. It looks at the largest individual process,
-not the potentially inflated sum for a process tree, and triggers when either:
+is off by default. When enabled, the collector pauses the process that crossed
+the threshold after two consecutive suspicious samples. Targeting the culprit
+instead of the whole tree keeps the agent root and its terminal foreground
+ownership intact when a helper runs away. The guard triggers when either:
 
 - that process uses at least 30% of physical RAM while macOS reports warning or critical pressure; or
 - it uses at least 15% of RAM and grew by at least 10% of physical RAM within 30 seconds.
 
-Automatic containment only uses `SIGSTOP`. The paused session remains visible
+Automatic containment only uses `SIGSTOP`. The affected session remains visible
 with a pause indicator and can be resumed or ended from its expanded row.
 
 ## Architecture
